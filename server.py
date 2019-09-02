@@ -279,12 +279,34 @@ class Player:
                     if last_card and (last_card[0], -5) not in deck.deck_cards:
                         deck.cards_in_play.append((last_card[0], -5))
 
+    # returns True if last card
+    def is_last_card(self, deck):
+        moves = []
+        c = []
+        if len(self.cards) == 1:
+            # print()
+            # print('-' * 20, 'LAST CARD', '-' * 20)
+            return True
+        for card in self.cards:
+            if card[0] not in c:
+                moves = self.cards_with_aces(self.cards, card[0], moves, deck)
+                c.append(card[0])
+
+        for move in moves:
+            if len(move) == len(self.cards) and 'penalty1' not in move:
+                # print()
+                # print('-' * 20, 'LAST CARD', '-' * 20)
+                return True
+
+        return False
+
 
 class Game(object):
-    def __init__(self):
-        self.no_of_players = 0
+    def __init__(self, no_of_players):
+        self.no_of_players = no_of_players
         self.deck = Deck()
-
+        self.game_id = str(random.randint(1, 10000)) + str(random.choice('abcdABCD')) + str(random.randint(1, 1000000))
+        self.room_id = ''
 
     def input_players(self):
         while True:
@@ -373,10 +395,10 @@ class ClientChannel(Channel):
     """
 
     def __init__(self, *args, **kwargs):
-
-
         Channel.__init__(self, *args, **kwargs)
-        self.player_id = str(self._server.next_id())
+        self.player_id = self._server.next_id()
+        print('in client __init')
+
 
 
     def Close(self):
@@ -386,17 +408,17 @@ class ClientChannel(Channel):
     ### Network specific callbacks ###
     ##################################
 
+    def Network_play_mode(self, data):
+        print('in networdk_play_mode')
+        self._server.play_mode(data, self.player_id)
+
+    def Network_last_card(self, data):
+        self._server.display_last_card(data)
+
     def Network_next(self, data):
         game_obj = pickle.loads(data['game_obj'].encode('latin-1'))
         # print("in next data is id of game obj", id(game_obj))
         self._server.next(game_obj)
-
-
-    def Network_message(self, data):
-        self._server.SendToAll({"action": "message", "message": data['message'], "who": self.nickname})
-
-    def Network_nickname(self, data):
-        self._server.SendPlayers()
 
 
 class ChatServer(Server):
@@ -404,40 +426,105 @@ class ChatServer(Server):
 
     def __init__(self, *args, **kwargs):
         Server.__init__(self, *args, **kwargs)
+        print('in server init')
         self.players = []
+        self.rooms = []
         self.player_id = -1
         print('Server launched')
 
+    def start(self, no_of_players, room_id):
 
-    def start(self, num):
-        if num == 2:
-            self.game = Game()
-            print("printing self.game.deck", self.game.deck)
-
-            self.game.no_of_players = len(self.players)
-            self.game.player_list = self.game.generate_players(len(self.players))
+            self.game = Game(no_of_players)
+            self.game.room_id = room_id
+            self.game.no_of_players = no_of_players
+            self.game.player_list = self.game.generate_players(no_of_players)
             self.game.curr_player = self.game.get_first_player()
-            print("TESTING")
-            print("self.game.player_list:", self.game.player_list)
-            print("self.game.curr_player:", self.game.curr_player)
-            print("self.game.return_hand_cards:", self.game.return_hand_cards())
-            d = "Game Started \n Shuffling..."
-            self.SendToAll(d)
+            d = "\n\nGame Started \n Shuffling..."
+            self.SendToAll({'action': 'started', 'started': d, 'game_obj': pickle.dumps(self.game).decode('latin-1')})
             # self.send_allcards({"action": "allcards", 'cards': self.game.return_hand_cards()})
-
-
             self.game.curr_player = self.game.get_first_player()
 
             self.next_turn()
 
     def Connected(self, channel, addr):
+        print('in connected')
         self.AddPlayer(channel)
 
-    def numplayer(self, data):
-        print('in numplayer')
-        [p.Send(data) for p in self.players]
-        print('end numplayer')
+    def play_mode(self, data, player_id):
+        room_id = data['room_id']
+        if data['play_mode'] == 'a':
 
+            # creating the room and then acknowledging the client
+            if self.create_room(room_id, data['num'], player_id):
+                self.send_acknowledge({'action': 'acknowledge', 'player_id': player_id, 'room_id': room_id, 'room': self.return_room(room_id)})
+
+        elif data['play_mode'] == 'b':
+            # adding to the room if that room exists and acknowledging the client
+            if self.add_to_rooms(room_id, player_id):
+                self.send_acknowledge({'action': 'acknowledge', 'player_id': player_id, 'room_id': room_id, 'room': self.return_room(room_id)})
+                if self.is_room_full(room_id):
+                    self.start(self.no_of_players_in_room(room_id), room_id)
+
+    def no_of_players_in_room(self, room_id):
+        room = None
+        for r in self.rooms:
+            if room_id in r.keys():
+                room = r
+                break
+        return room[room_id]['no_of_players']
+
+    def players_in_room(self, room_id):
+        room = None
+        for r in self.rooms:
+            if room_id in r.keys():
+                room = r
+                break
+        return room[room_id]['players']
+
+    def is_room_full(self, room_id):
+        room = None
+        for r in self.rooms:
+            if room_id in r.keys():
+                room = r
+                break
+        if room[room_id]['no_of_players'] == len(room[room_id]['players']):
+            return True
+        return False
+
+    def return_room(self, room_id):
+        for room in self.rooms:
+            if room_id in room.keys():
+                return room
+
+    def add_to_rooms(self, room_id, player_id):
+        for room in self.rooms:
+            if room_id in room.keys():
+                print('Room with room_id {} exists'.format(room_id))
+                n = room[room_id]['no_of_players']
+                # if room is full
+                if n == len(room[room_id]['players']):
+                    print('Room is already full')
+                    return False
+                else:
+                    room[room_id]['players'].append(player_id)
+                    print('Player {} added to room {}'.format(player_id, room_id))
+                    return True
+        # if there are no rooms
+        else:
+            print('No room with room_id {} exists'.format(room_id))
+            return False
+
+    def create_room(self, room_id, n, player_id):
+        self.rooms.append({room_id: {"no_of_players": n, "players": [player_id,]}})
+        print('Room with room_id {} is created'.format(room_id))
+        return True
+
+    def send_acknowledge(self, data):
+        for player in self.players:
+            if data['player_id'] in player.values():
+                i = self.players.index(player)
+                player_obj = next(iter(self.players[i].keys()))     # return object
+                player_obj.Send(data)
 
     def next(self, game_obj):
         # self.send_mycards(self.game.player_list)
@@ -448,52 +535,63 @@ class ChatServer(Server):
         self.game.curr_player = self.game.get_next_player(self.game.curr_player)
         self.next_turn()
 
-
     def next_turn(self):
+        room_players = self.players_in_room(self.game.room_id)
 
-        for player in self.game.player_list:
-            print('in next_turn"s for, ', self.game.curr_player, player, self.game.player_list)
-            if player == self.game.curr_player and len(self.players) >= 2:
-                print('in next_turn"s if')
-                # print('self.game.deck-------------->', pickle.dumps(self.game.player_list[0].))
-                print('mst h klsfjkldjgkdjfd svkjvjkdsvkljs', player.get_cards(), self.game.deck)
-                self.players[self.game.player_list.index(player)].Send({'action': 'validmoves', 'player_obj': (pickle.dumps(player).decode('latin-1')), 'deck_obj':(pickle.dumps(self.game.deck).decode('latin-1')), 'game_obj': (pickle.dumps(self.game).decode('latin-1'))})
-                self.players[self.game.player_list.index(player)].Send({'action': 'calturn', 'turn': True})
-                self.send_mycards(self.game.player_list)
+        for player in self.game.player_list:       # [ a, b, c, d]
+            if player == self.game.curr_player:     # for curr_player
+                # room_players = self.players_in_room(self.game.room_id)
 
+                p = room_players[self.game.player_list.index(player)]
+                # p.Send({'action': 'validmoves', 'game_obj': (pickle.dumps(self.game).decode('latin-1'))})
+                # p.Send({'action': 'calturn', 'turn': True})
+                # self.players[self.game.player_list.index(player)].Send({'action': 'validmoves', 'game_obj': (pickle.dumps(self.game).decode('latin-1'))})
+                # self.players[self.game.player_list.index(player)].Send({'action': 'calturn', 'turn': True})
+                # self.send_mycards(self.game.player_list)
+                self.send_data(p, {'action': 'validmoves', 'game_obj': (pickle.dumps(self.game).decode('latin-1'))})
+                self.send_data(p, {'action': 'calturn', 'turn': True})
+                self.send_mycards(self.game)
                 break
 
-
-
+    def display_last_card(self, data):
+        self.SendToAll({'action': 'last_card', 'is_last_card': data['is_last_card'], 'p_id': data['p_id'], 'game_obj': (pickle.dumps(self.game).decode('latin-1'))})
 
     def send_allcards(self, data):
         print("in send_allcards")
         [p.Send(data) for p in self.players]
 
-    def send_mycards(self, data):
-        print("in send_mycards: data is:", data)
-        for i in range(len(self.players)):
+    def send_mycards(self, game_obj):
+        print("in send_mycards: data is:", game_obj)
+        room_players = self.players_in_room(game_obj.room_id)
+        for i in range(len(game_obj.player_list)):
             print("sent to data['id']==", i)
-            print('players', self.players)
-            self.players[i].Send({'action': 'mycards', 'mycards': self.game.player_list[i].cards, 'id' : self.game.player_list[i].p_id})
+            p = room_players[i]
+            self.send_data(p, {'action': 'mycards', 'mycards': self.game.player_list[i].cards, 'id' : self.game.player_list[i].p_id})
 
     def AddPlayer(self, player):
-        print("New Player" + str(player.addr))
-        self.players.append(player)
+        # print('in add player b')
+        self.players.append({player: self.player_id})
+        print('players in add player are :', self.players)
         # print("TESTING self.players.append(player) gives:", self.players)
-        self.SendPlayers()
-        print("players", [p for p in self.players])
-        self.send_to_specific(len(self.players))
         # self.SendToAll({"action": "players", 'num': [p.player_id for p in self.players]})
-        self.start(len(self.players))
 
     def DelPlayer(self, player):
         print("Deleting Player" + str(player.addr))
-
+        self.remove_player(player)
         self.EndGame({'action': 'restart'})
-        self.players.remove(player)
-        self.start(len(self.players))
+
+
+        # self.start(len(self.players))
         # self.SendPlayers()
+
+    def remove_player(self, player):
+        for pl in self.players:
+            for p in pl.keys():
+                if p == player:
+                    self.players.remove(pl)
+                    break
+
+
 
     def EndGame(self, data):
         [p.Send(data) for p in self.players]
@@ -502,23 +600,30 @@ class ChatServer(Server):
         self.player_id += 1
         return self.player_id
 
-    def SendPlayers(self):
-        self.SendToAll({"action": "players", "players": [p.player_id for p in self.players]})
-
-    def send_to_specific(self, data):
-        print("in send_to_specific sending data:", data)
-
-        for i in range(data):
-            if data == i:
-                print("sent to data['id']==", i)
-                print('players', self.players)
-                self.players[i].Send({'action': 'assign_id', 'data': i})
+    # send to specific player having id = player_id
+    def send_data(self, player_id, data):
+        for player in self.players:
+            if player_id in player.values():
+                i = self.players.index(player)
+                player_obj = next(iter(self.players[i].keys()))     # return object
+                player_obj.Send(data)
 
     def Network(self, data):
         print('in network data is ', data)
 
+    # sends to all the players of a game
     def SendToAll(self, data):
-        [p.Send(data) for p in self.players]
+        game_obj = pickle.loads(data['game_obj'].encode('latin-1'))
+        room_id = game_obj.room_id
+        players_in_room = self.players_in_room(room_id)
+        # print('players in room', players_in_room)
+        for player in self.players:     # {} {} {} {}
+            for p in players_in_room:    #  [0, 1, 2, 3]
+                if p == next(iter(player.values())):
+                    i = self.players.index(player)
+                    player_obj = next(iter(self.players[i].keys()))  # return object
+                    player_obj.Send(data)
+                    # print('player_obj is ', player_obj, '\nAll players are', self.players)
 
     def Launch(self):
         while True:
@@ -529,6 +634,7 @@ class ChatServer(Server):
 # get command line argument of server, port
 if __name__ == '__main__':
 
-    host, port = '192.168.56.1', '21'
+    # host, port = '192.168.56.1', '21'
+    host, port = 'localhost', '21'
     s = ChatServer(localaddr=(host, int(port)))
     s.Launch()

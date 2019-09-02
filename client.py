@@ -282,12 +282,35 @@ class Player:
                     if last_card and (last_card[0], -5) not in deck.deck_cards:
                         deck.cards_in_play.append((last_card[0], -5))
 
+    # returns True if last card
+    def is_last_card(self, deck):
+        moves = []
+        c = []
+        if len(self.cards) == 1:
+            # print()
+            # print('-' * 20, 'LAST CARD', '-' * 20)
+            return True
+        for card in self.cards:
+            if card[0] not in c:
+                moves = self.cards_with_aces(self.cards, card[0], moves, deck)
+                c.append(card[0])
+
+        for move in moves:
+            if len(move) == len(self.cards) and 'penalty1' not in move:
+                # print()
+                # print('-' * 20, 'LAST CARD', '-' * 20)
+                return True
+
+        return False
+
 
 class Game:
     def __init__(self):
         self.no_of_players = self.input_players()
         self.deck = Deck()
         self.player_list = self.generate_players(self.no_of_players)
+        self.game_id = int(str(random.randint(1, 1000000)) + str(random.randint(2322, 100000000000)))
+
 
     def input_players(self):
         while True:
@@ -372,20 +395,32 @@ class Game:
 class Client(ConnectionListener):
     def __init__(self, host, port):
         self.Connect((host, port))
-        self.id = '0'
+        self.id = ''
         self.turn = False
         print("Chat client started")
-        print("Ctrl-C to exit")
         self.valid_moves = []
         self.deck = None
-        self.no_of_players = 0
         self.game = None
+        self.num = None
 
-        # get a nickname from the user before starting
-
-        # if self.turn:
-        #     self.play_move(self.valid_moves, self.deck)
-        # connection.Send({"action": "next"})
+    def choose_mode(self):
+        while 1:
+            self.play = input('do u want to A)create a custom room or B)want to join friend\'s room: ').strip().lower()
+            if self.play == 'a':
+                while 1:
+                    self.num = int(input('Enter the no of players for this game between 2 and 8: '))
+                    if not (self.num < 2 or self.num > 8):
+                        print('you chose:', self.num)
+                        random_id = str(random.randint(1, 3000)) + str(random.choice('abcdABCD')) + str(random.randint(20, 200000)) + str(random.choice('abcdABCD'))
+                        self.room_id = random_id
+                        # print('Your custom room_id is {}'.format(self.room_id))
+                        connection.Send({'action': 'play_mode', 'play_mode': self.play, 'num': self.num, 'room_id': self.room_id})
+                        break
+                break
+            elif self.play == 'b':
+                room_id = input('Enter the room_id created by your friend: ').strip()
+                connection.Send({'action': 'play_mode', 'play_mode': self.play, 'room_id': room_id})
+                break
 
     def Loop(self):
         connection.Pump()
@@ -393,31 +428,24 @@ class Client(ConnectionListener):
         if self.turn:
             self.playing()
 
-
-
     def playing(self):
         if self.turn:
             self.print_valid_moves(self.valid_moves)
 
             self.game.curr_player.play_move(self.valid_moves, self.game.deck)
+            if self.game.curr_player.is_last_card(self.game.deck):
+                connection.Send({"action": "last_card", "is_last_card": True, 'p_id': self.id})
             if self.game.curr_player.has_won():
                 connection.Close()
             connection.Send({"action": "next", "game_obj": (pickle.dumps(self.game).decode('latin-1'))})
 
-            # print('*'*50, "game object self.game before sending", self.game)
-            # print("self.turn before is ", self.turn)
-            # print("game cards in hand", id(self.game))
             self.turn = self.changeturn()
-            # print("self.turn is ", self.turn)
             print()
-
 
     def changeturn(self):
             if self.turn == True:
-                self.turn = False
                 return False
             else:
-                self.turn = True
                 return True
 
     def print_turn(self):
@@ -437,18 +465,24 @@ class Client(ConnectionListener):
     ### Network event/message callbacks ###
     #######################################
 
+    def Network_acknowledge(self, data):
+        room_id = data['room_id']
+        print('\nYou are added to the room with id {}'.format(room_id))
+        total_players = data['room'][room_id]['no_of_players']
+        current_players = len(data['room'][room_id]['players'])
+        print('Total players {}. Players currently in room {}'.format(total_players, current_players))
+
+    def Network_started(self, data):
+        print(data['started'])
+
+    def Network_last_card(self, data):
+        if data['is_last_card']:
+            print('\n Player {} LAST CARD\n'.format(data['p_id']))
 
     def Network_validmoves(self, data):
         self.game = pickle.loads(data['game_obj'].encode('latin-1'))
-
-        # self.curr_player = pickle.loads(data['player_obj'].encode('latin-1'))
-        self.deck = pickle.loads(data['deck_obj'].encode('latin-1'))
         self.valid_moves = self.game.curr_player.get_valid_moves(self.game.deck)
-
-        # print('object recieved  self.deck{} self.curr_player{} self.game{}'.format(self.deck, self.curr_player, self.game), )
-        # print('cure-------------dklfjkdfjkldjfkljdsklgj dlfjsl',self.curr_player.get_cards())
-
-        self.deck.print_cards_in_play()
+        self.game.deck.print_cards_in_play()
 
 
     def Network_restart(self, data):
@@ -457,6 +491,7 @@ class Client(ConnectionListener):
         self.turn = False
 
     def Network_mycards(self, data):
+        # self.id = data['id']
         print('You are player {}.\nYour cards are: {}'.format(data['id'], data['mycards']))
 
     def Network_calturn(self, data):
@@ -464,11 +499,14 @@ class Client(ConnectionListener):
         # print("is my turn: ", self.turn)
         print()
 
+    def Network_assign_id(self, data):
+        self.id = data['player_id']
+
     # built in stuff
 
     def Network_connected(self, data):
         print("You are connected to the server\n")
-        # print('self.no_of_players', self.no_of_players)
+        self.choose_mode()
 
     def Network_error(self, data):
         print('error:', data['error'][0])
@@ -481,7 +519,7 @@ class Client(ConnectionListener):
 
 if __name__ == '__main__':
 
-    host, port = '47.30.234.58', '21'
+    host, port = 'localhost', '21'
     c = Client(host, int(port))
     while 1:
         c.Loop()
